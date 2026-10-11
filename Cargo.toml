@@ -1,0 +1,11 @@
+[package]
+name = "line-linux"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libadwaita = { version = "0.7", features = ["v1_5"] }
+gtk4 = "0.9"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+ureq = { version = "2.10", features = ["json"] }
