@@ -1,6 +1,7 @@
 import { loginWithQR, loginWithAuthToken } from "../linejs/packages/linejs/client/login.ts";
 import { FileStorage } from "../linejs/packages/linejs/base/storage/file.ts";
 import { Client } from "../linejs/packages/linejs/client/client.ts";
+import { TalkMessage } from "../linejs/packages/linejs/client/features/message/talk.ts";
 
 const CRED_PATH = "./line_credentials.json";
 const STORAGE_PATH = "./line_storage.json";
@@ -120,6 +121,45 @@ if (import.meta.main) {
 				}));
 				return Response.json(items);
 			} catch (e) {
+				return Response.json({ error: String(e) }, { status: 500 });
+			}
+		}
+
+		// Chat history (previous messages)
+		if (url.pathname.startsWith("/api/chats/") && url.pathname.endsWith("/messages")) {
+			try {
+				const parts = url.pathname.split("/");
+				const chatMid = parts[3];
+				const rawMsgs = await client.base.talk.getRecentMessagesV2({
+					messageBoxId: chatMid,
+					messagesCount: 35,
+				});
+				const items = await Promise.all(
+					rawMsgs.reverse().map(async (raw) => {
+						const m = await TalkMessage.fromRawTalk(raw, client);
+						let bodyText = m.text;
+						if (!bodyText) {
+							if (m.raw.contentType === "IMAGE") bodyText = "📷 [รูปภาพ]";
+							else if (m.raw.contentType === "STICKER") bodyText = "🎨 [สติกเกอร์]";
+							else if (m.raw.contentType === "VIDEO") bodyText = "🎬 [วิดีโอ]";
+							else if (m.raw.contentType === "FILE") bodyText = "📁 [ไฟล์แนบ]";
+							else bodyText = m.raw.text || "(ข้อความ)";
+						}
+						const timeStr = m.raw.createdTime
+							? new Date(Number(m.raw.createdTime)).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" })
+							: "";
+						return {
+							id: String(m.raw.id),
+							text: bodyText,
+							isMe: m.isMyMessage,
+							time: timeStr,
+							senderMid: m.from.id,
+						};
+					})
+				);
+				return Response.json(items);
+			} catch (e) {
+				console.error("fetchMessages error:", e);
 				return Response.json({ error: String(e) }, { status: 500 });
 			}
 		}

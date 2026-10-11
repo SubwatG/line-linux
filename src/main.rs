@@ -30,6 +30,17 @@ struct ChatItem {
     last_message: String,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct MessageItem {
+    id: String,
+    text: String,
+    #[serde(rename = "isMe")]
+    is_me: bool,
+    time: String,
+    #[serde(rename = "senderMid")]
+    sender_mid: String,
+}
+
 #[derive(Serialize)]
 struct SendMessageReq {
     text: String,
@@ -37,7 +48,7 @@ struct SendMessageReq {
 
 fn fetch_profile() -> Option<UserProfile> {
     ureq::get(&format!("{}/api/me", ENGINE_URL))
-        .timeout(std::time::Duration::from_millis(800))
+        .timeout(std::time::Duration::from_millis(1000))
         .call()
         .ok()?
         .into_json::<UserProfile>()
@@ -46,19 +57,62 @@ fn fetch_profile() -> Option<UserProfile> {
 
 fn fetch_chats() -> Vec<ChatItem> {
     ureq::get(&format!("{}/api/chats", ENGINE_URL))
-        .timeout(std::time::Duration::from_millis(1500))
+        .timeout(std::time::Duration::from_millis(2500))
         .call()
         .ok()
         .and_then(|r| r.into_json::<Vec<ChatItem>>().ok())
         .unwrap_or_default()
 }
 
+fn fetch_messages(mid: &str) -> Vec<MessageItem> {
+    ureq::get(&format!("{}/api/chats/{}/messages", ENGINE_URL, mid))
+        .timeout(std::time::Duration::from_millis(3000))
+        .call()
+        .ok()
+        .and_then(|r| r.into_json::<Vec<MessageItem>>().ok())
+        .unwrap_or_default()
+}
+
 fn send_chat_message(mid: &str, text: &str) -> bool {
     let req = SendMessageReq { text: text.to_string() };
     ureq::post(&format!("{}/api/chats/{}/send", ENGINE_URL, mid))
-        .timeout(std::time::Duration::from_millis(3000))
+        .timeout(std::time::Duration::from_millis(4000))
         .send_json(req)
         .is_ok()
+}
+
+fn add_bubble(container: &Box, text: &str, is_me: bool, time: &str) {
+    let bubble_box = Box::new(Orientation::Horizontal, 6);
+    let bubble = Box::new(Orientation::Vertical, 4);
+
+    bubble_box.set_halign(if is_me { Align::End } else { Align::Start });
+    bubble.set_css_classes(&["card"]);
+
+    bubble.set_margin_start(8);
+    bubble.set_margin_end(8);
+    bubble.set_margin_top(4);
+    bubble.set_margin_bottom(4);
+
+    let lbl = Label::builder()
+        .label(text)
+        .wrap(true)
+        .max_width_chars(52)
+        .halign(if is_me { Align::End } else { Align::Start })
+        .selectable(true)
+        .build();
+
+    let time_lbl = Label::builder()
+        .label(time)
+        .css_classes(["caption", "dim-label"])
+        .halign(if is_me { Align::End } else { Align::Start })
+        .build();
+
+    bubble.append(&lbl);
+    if !time.is_empty() {
+        bubble.append(&time_lbl);
+    }
+    bubble_box.append(&bubble);
+    container.append(&bubble_box);
 }
 
 fn main() {
@@ -86,6 +140,26 @@ fn build_ui(app: &Application) {
         .label(&active_chat_name)
         .css_classes(["heading"])
         .build();
+
+    // Message History View Container
+    let msg_container = Box::new(Orientation::Vertical, 8);
+    msg_container.set_margin_start(18);
+    msg_container.set_margin_end(18);
+    msg_container.set_margin_top(18);
+    msg_container.set_margin_bottom(18);
+    msg_container.set_vexpand(true);
+
+    // Load initial chat history if available
+    if let Some(first_chat) = real_chats.first() {
+        let msgs = fetch_messages(&first_chat.mid);
+        if msgs.is_empty() {
+            add_bubble(&msg_container, "ยังไม่มีประวัติข้อความล่าสุด หรือข้อความหมดอายุแล้ว", false, "");
+        } else {
+            for m in msgs {
+                add_bubble(&msg_container, &m.text, m.is_me, &m.time);
+            }
+        }
+    }
 
     // -------------------------------------------------------------
     // 1. Sidebar (Chat List & User Profile)
@@ -119,7 +193,6 @@ fn build_ui(app: &Application) {
     sidebar_box.append(&sidebar_header);
 
     if profile.is_none() {
-        // Show status page instructing how to connect real LINE
         let status_page = StatusPage::builder()
             .icon_name("network-offline-symbolic")
             .title("ยังไม่ได้เชื่อมต่อบัญชี LINE จริง")
@@ -176,12 +249,28 @@ fn build_ui(app: &Application) {
         let chats_clone = real_chats.clone();
         let mid_clone_for_row = Arc::clone(&selected_chat_mid);
         let title_clone = chat_title_lbl.clone();
+        let msg_container_for_row = msg_container.clone();
+
         list_box.connect_row_selected(move |_, row| {
             if let Some(r) = row {
                 let idx = r.index() as usize;
                 if let Some(chat) = chats_clone.get(idx) {
                     *mid_clone_for_row.lock().unwrap() = chat.mid.clone();
                     title_clone.set_label(&chat.name);
+
+                    // Clear old messages and render real chat history
+                    while let Some(child) = msg_container_for_row.first_child() {
+                        msg_container_for_row.remove(&child);
+                    }
+
+                    let msgs = fetch_messages(&chat.mid);
+                    if msgs.is_empty() {
+                        add_bubble(&msg_container_for_row, "ยังไม่มีประวัติข้อความล่าสุด หรือข้อความหมดอายุแล้ว", false, "");
+                    } else {
+                        for m in msgs {
+                            add_bubble(&msg_container_for_row, &m.text, m.is_me, &m.time);
+                        }
+                    }
                 }
             }
         });
@@ -227,49 +316,6 @@ fn build_ui(app: &Application) {
         t.set_timeout(3);
         toast_vid.add_toast(t);
     });
-
-    // Message History View
-    let msg_container = Box::new(Orientation::Vertical, 14);
-    msg_container.set_margin_start(18);
-    msg_container.set_margin_end(18);
-    msg_container.set_margin_top(18);
-    msg_container.set_margin_bottom(18);
-    msg_container.set_vexpand(true);
-
-    let add_bubble = |container: &Box, text: &str, is_me: bool, time: &str| {
-        let bubble_box = Box::new(Orientation::Horizontal, 6);
-        let bubble = Box::new(Orientation::Vertical, 4);
-
-        bubble_box.set_halign(if is_me { Align::End } else { Align::Start });
-        bubble.set_css_classes(&["card"]);
-
-        bubble.set_margin_start(8);
-        bubble.set_margin_end(8);
-        bubble.set_margin_top(6);
-        bubble.set_margin_bottom(6);
-
-        let lbl = Label::builder()
-            .label(text)
-            .wrap(true)
-            .max_width_chars(50)
-            .halign(if is_me { Align::End } else { Align::Start })
-            .build();
-
-        let time_lbl = Label::builder()
-            .label(time)
-            .css_classes(["caption", "dim-label"])
-            .halign(if is_me { Align::End } else { Align::Start })
-            .build();
-
-        bubble.append(&lbl);
-        bubble.append(&time_lbl);
-        bubble_box.append(&bubble);
-        container.append(&bubble_box);
-    };
-
-    if profile.is_some() {
-        add_bubble(&msg_container, "เชื่อมต่อบัญชีจริงสำเร็จ สามารถพิมพ์ส่งข้อความจริงเข้าแชต LINE ได้เลยครับ", false, "ระบบ");
-    }
 
     let msg_scrolled = ScrolledWindow::builder()
         .hscrollbar_policy(PolicyType::Never)
@@ -354,8 +400,8 @@ fn build_ui(app: &Application) {
     let window = ApplicationWindow::builder()
         .application(app)
         .title("LINE")
-        .default_width(1000)
-        .default_height(680)
+        .default_width(1020)
+        .default_height(700)
         .content(&toast_overlay)
         .build();
 
