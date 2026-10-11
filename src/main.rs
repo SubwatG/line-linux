@@ -5,7 +5,7 @@ use libadwaita::{
     Avatar, ToastOverlay, Toast, StatusPage
 };
 use gtk4::{
-    Box, Orientation, Label, Entry, Button, ScrolledWindow, ListBox, ListBoxRow,
+    Box, Orientation, Label, Entry, SearchEntry, Button, ScrolledWindow, ListBox, ListBoxRow,
     Align, PolicyType, Separator
 };
 use serde::{Deserialize, Serialize};
@@ -170,7 +170,7 @@ fn build_ui(app: &Application) {
         .title_widget(&sidebar_title)
         .build();
 
-    let search_entry = Entry::builder()
+    let search_entry = SearchEntry::builder()
         .placeholder_text("ค้นหาแชตหรือเพื่อน...")
         .margin_start(12)
         .margin_end(12)
@@ -205,6 +205,8 @@ fn build_ui(app: &Application) {
 
         for c in &real_chats {
             let row = ListBoxRow::new();
+            row.set_widget_name(&format!("{}|||{}", c.mid, c.name));
+
             let hbox = Box::new(Orientation::Horizontal, 12);
             hbox.set_margin_start(12);
             hbox.set_margin_end(12);
@@ -243,27 +245,54 @@ fn build_ui(app: &Application) {
             list_box.append(&row);
         }
 
+        // Live Search Filter
+        let filter_query = Arc::new(Mutex::new(String::new()));
+        let filter_query_clone = Arc::clone(&filter_query);
+        let list_box_filter = list_box.clone();
+
+        search_entry.connect_search_changed(move |entry| {
+            *filter_query_clone.lock().unwrap() = entry.text().to_lowercase();
+            list_box_filter.invalidate_filter();
+        });
+
+        let filter_query_check = Arc::clone(&filter_query);
+        list_box.set_filter_func(move |row| {
+            let q = filter_query_check.lock().unwrap();
+            if q.trim().is_empty() {
+                return true;
+            }
+            let w_name = row.widget_name().to_lowercase();
+            if let Some(pos) = w_name.find("|||") {
+                let chat_name = &w_name[pos + 3..];
+                chat_name.contains(&*q)
+            } else {
+                true
+            }
+        });
+
         sidebar_scrolled.set_child(Some(&list_box));
         sidebar_box.append(&sidebar_scrolled);
 
-        let chats_clone = real_chats.clone();
         let mid_clone_for_row = Arc::clone(&selected_chat_mid);
         let title_clone = chat_title_lbl.clone();
         let msg_container_for_row = msg_container.clone();
 
         list_box.connect_row_selected(move |_, row| {
             if let Some(r) = row {
-                let idx = r.index() as usize;
-                if let Some(chat) = chats_clone.get(idx) {
-                    *mid_clone_for_row.lock().unwrap() = chat.mid.clone();
-                    title_clone.set_label(&chat.name);
+                let w_name = r.widget_name();
+                if let Some(pos) = w_name.find("|||") {
+                    let mid = &w_name[..pos];
+                    let chat_name = &w_name[pos + 3..];
+
+                    *mid_clone_for_row.lock().unwrap() = mid.to_string();
+                    title_clone.set_label(chat_name);
 
                     // Clear old messages and render real chat history
                     while let Some(child) = msg_container_for_row.first_child() {
                         msg_container_for_row.remove(&child);
                     }
 
-                    let msgs = fetch_messages(&chat.mid);
+                    let msgs = fetch_messages(mid);
                     if msgs.is_empty() {
                         add_bubble(&msg_container_for_row, "ยังไม่มีประวัติข้อความล่าสุด หรือข้อความหมดอายุแล้ว", false, "");
                     } else {
