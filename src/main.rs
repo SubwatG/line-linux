@@ -81,6 +81,12 @@ fn build_ui(app: &Application) {
         real_chats.first().map(|c| c.mid.clone()).unwrap_or_default()
     ));
 
+    let active_chat_name = real_chats.first().map(|c| c.name.clone()).unwrap_or_else(|| "ข้อความ".to_string());
+    let chat_title_lbl = Label::builder()
+        .label(&active_chat_name)
+        .css_classes(["heading"])
+        .build();
+
     // -------------------------------------------------------------
     // 1. Sidebar (Chat List & User Profile)
     // -------------------------------------------------------------
@@ -166,6 +172,19 @@ fn build_ui(app: &Application) {
 
         sidebar_scrolled.set_child(Some(&list_box));
         sidebar_box.append(&sidebar_scrolled);
+
+        let chats_clone = real_chats.clone();
+        let mid_clone_for_row = Arc::clone(&selected_chat_mid);
+        let title_clone = chat_title_lbl.clone();
+        list_box.connect_row_selected(move |_, row| {
+            if let Some(r) = row {
+                let idx = r.index() as usize;
+                if let Some(chat) = chats_clone.get(idx) {
+                    *mid_clone_for_row.lock().unwrap() = chat.mid.clone();
+                    title_clone.set_label(&chat.name);
+                }
+            }
+        });
     }
 
     let sidebar_page = NavigationPage::builder()
@@ -177,12 +196,6 @@ fn build_ui(app: &Application) {
     // 2. Content Area (Active Chat & VoIP Call)
     // -------------------------------------------------------------
     let content_header = HeaderBar::new();
-
-    let active_chat_name = real_chats.first().map(|c| c.name.clone()).unwrap_or_else(|| "ข้อความ".to_string());
-    let chat_title_lbl = Label::builder()
-        .label(&active_chat_name)
-        .css_classes(["heading"])
-        .build();
     content_header.set_title_widget(Some(&chat_title_lbl));
 
     // Call Button (LINE Planet WebRTC)
