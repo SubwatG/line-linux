@@ -1,50 +1,64 @@
+use std::sync::{Arc, Mutex};
 use libadwaita::prelude::*;
 use libadwaita::{
     Application, ApplicationWindow, HeaderBar, NavigationSplitView, NavigationPage,
-    Avatar, ToastOverlay, Toast
+    Avatar, ToastOverlay, Toast, StatusPage
 };
 use gtk4::{
     Box, Orientation, Label, Entry, Button, ScrolledWindow, ListBox, ListBoxRow,
     Align, PolicyType, Separator
 };
+use serde::{Deserialize, Serialize};
 
 const APP_ID: &str = "com.github.subwatg.linelinux";
+const ENGINE_URL: &str = "http://127.0.0.1:4884";
 
-#[derive(Clone)]
-struct ChatItem {
-    name: String,
-    last_msg: String,
-    time: String,
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct UserProfile {
+    #[serde(rename = "displayName")]
+    display_name: String,
+    #[serde(rename = "statusMessage")]
+    status_message: String,
     mid: String,
 }
 
-fn sample_chats() -> Vec<ChatItem> {
-    vec![
-        ChatItem {
-            name: "ภาควิชาวิทยาการคำนวณและเทคโนโลยีฯ".to_string(),
-            last_msg: "แจ้งกำหนดการประชุมคณะกรรมการประจำภาควิชา...".to_string(),
-            time: "18:30".to_string(),
-            mid: "c_dept_01".to_string(),
-        },
-        ChatItem {
-            name: "อาจารย์กิตติพงศ์ (บันทึกส่วนตัว / Keep)".to_string(),
-            last_msg: "บันทึก: โครงสร้างคำสั่ง e-Office 2569".to_string(),
-            time: "17:15".to_string(),
-            mid: "c_keep_01".to_string(),
-        },
-        ChatItem {
-            name: "งานบริการการศึกษา มก. กพส.".to_string(),
-            last_msg: "ส่งรายชื่อกรรมการคุมสอบไล่ ภาคต้น 69 เรียบร้อยแล้วค่ะ".to_string(),
-            time: "15:42".to_string(),
-            mid: "c_academic_01".to_string(),
-        },
-        ChatItem {
-            name: "โครงการวิจัยคณิตศาสตร์".to_string(),
-            last_msg: "Lemma L7 ผ่านการทดสอบเรียบร้อยครับอาจารย์".to_string(),
-            time: "12:05".to_string(),
-            mid: "c_math_01".to_string(),
-        },
-    ]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct ChatItem {
+    mid: String,
+    name: String,
+    #[serde(rename = "lastMessage")]
+    last_message: String,
+}
+
+#[derive(Serialize)]
+struct SendMessageReq {
+    text: String,
+}
+
+fn fetch_profile() -> Option<UserProfile> {
+    ureq::get(&format!("{}/api/me", ENGINE_URL))
+        .timeout(std::time::Duration::from_millis(800))
+        .call()
+        .ok()?
+        .into_json::<UserProfile>()
+        .ok()
+}
+
+fn fetch_chats() -> Vec<ChatItem> {
+    ureq::get(&format!("{}/api/chats", ENGINE_URL))
+        .timeout(std::time::Duration::from_millis(1500))
+        .call()
+        .ok()
+        .and_then(|r| r.into_json::<Vec<ChatItem>>().ok())
+        .unwrap_or_default()
+}
+
+fn send_chat_message(mid: &str, text: &str) -> bool {
+    let req = SendMessageReq { text: text.to_string() };
+    ureq::post(&format!("{}/api/chats/{}/send", ENGINE_URL, mid))
+        .timeout(std::time::Duration::from_millis(3000))
+        .send_json(req)
+        .is_ok()
 }
 
 fn main() {
@@ -59,11 +73,21 @@ fn main() {
 fn build_ui(app: &Application) {
     let toast_overlay = ToastOverlay::new();
 
+    // Check engine connection
+    let profile = fetch_profile();
+    let real_chats = if profile.is_some() { fetch_chats() } else { Vec::new() };
+
+    let selected_chat_mid = Arc::new(Mutex::new(
+        real_chats.first().map(|c| c.mid.clone()).unwrap_or_default()
+    ));
+
     // -------------------------------------------------------------
-    // 1. Sidebar (Chat List)
+    // 1. Sidebar (Chat List & User Profile)
     // -------------------------------------------------------------
+    let user_name = profile.as_ref().map(|p| p.display_name.as_str()).unwrap_or("LINE");
+    let sidebar_title = Label::builder().label(user_name).css_classes(["title-3"]).build();
     let sidebar_header = HeaderBar::builder()
-        .title_widget(&Label::builder().label("LINE").css_classes(["title-3"]).build())
+        .title_widget(&sidebar_title)
         .build();
 
     let search_entry = Entry::builder()
@@ -79,67 +103,70 @@ fn build_ui(app: &Application) {
         .selection_mode(gtk4::SelectionMode::Single)
         .build();
 
-    let chats = sample_chats();
-    for c in &chats {
-        let row = ListBoxRow::new();
-        let hbox = Box::new(Orientation::Horizontal, 12);
-        hbox.set_margin_start(12);
-        hbox.set_margin_end(12);
-        hbox.set_margin_top(10);
-        hbox.set_margin_bottom(10);
-
-        let avatar = Avatar::builder()
-            .text(&c.name)
-            .size(42)
-            .show_initials(true)
-            .build();
-        hbox.append(&avatar);
-
-        let text_box = Box::new(Orientation::Vertical, 4);
-        text_box.set_hexpand(true);
-
-        let title_box = Box::new(Orientation::Horizontal, 8);
-        let name_lbl = Label::builder()
-            .label(&c.name)
-            .css_classes(["heading"])
-            .halign(Align::Start)
-            .ellipsize(gtk4::pango::EllipsizeMode::End)
-            .hexpand(true)
-            .build();
-        let time_lbl = Label::builder()
-            .label(&c.time)
-            .css_classes(["caption", "dim-label"])
-            .build();
-        title_box.append(&name_lbl);
-        title_box.append(&time_lbl);
-
-        let msg_lbl = Label::builder()
-            .label(&c.last_msg)
-            .css_classes(["body", "dim-label"])
-            .halign(Align::Start)
-            .ellipsize(gtk4::pango::EllipsizeMode::End)
-            .build();
-
-        text_box.append(&title_box);
-        text_box.append(&msg_lbl);
-        hbox.append(&text_box);
-
-        row.set_child(Some(&hbox));
-        list_box.append(&row);
-    }
-
     let sidebar_scrolled = ScrolledWindow::builder()
         .hscrollbar_policy(PolicyType::Never)
         .vscrollbar_policy(PolicyType::Automatic)
-        .child(&list_box)
         .vexpand(true)
         .build();
 
     let sidebar_box = Box::new(Orientation::Vertical, 0);
     sidebar_box.append(&sidebar_header);
-    sidebar_box.append(&search_entry);
-    sidebar_box.append(&Separator::new(Orientation::Horizontal));
-    sidebar_box.append(&sidebar_scrolled);
+
+    if profile.is_none() {
+        // Show status page instructing how to connect real LINE
+        let status_page = StatusPage::builder()
+            .icon_name("network-offline-symbolic")
+            .title("ยังไม่ได้เชื่อมต่อบัญชี LINE จริง")
+            .description("กรุณารันคำสั่ง ./run_engine.sh ในเทอร์มินัลเพื่อสแกน QR Code เข้าสู่ระบบ")
+            .build();
+        sidebar_box.append(&status_page);
+    } else {
+        sidebar_box.append(&search_entry);
+        sidebar_box.append(&Separator::new(Orientation::Horizontal));
+
+        for c in &real_chats {
+            let row = ListBoxRow::new();
+            let hbox = Box::new(Orientation::Horizontal, 12);
+            hbox.set_margin_start(12);
+            hbox.set_margin_end(12);
+            hbox.set_margin_top(10);
+            hbox.set_margin_bottom(10);
+
+            let avatar = Avatar::builder()
+                .text(&c.name)
+                .size(42)
+                .show_initials(true)
+                .build();
+            hbox.append(&avatar);
+
+            let text_box = Box::new(Orientation::Vertical, 4);
+            text_box.set_hexpand(true);
+
+            let name_lbl = Label::builder()
+                .label(&c.name)
+                .css_classes(["heading"])
+                .halign(Align::Start)
+                .ellipsize(gtk4::pango::EllipsizeMode::End)
+                .hexpand(true)
+                .build();
+            text_box.append(&name_lbl);
+
+            let msg_lbl = Label::builder()
+                .label(&c.last_message)
+                .css_classes(["body", "dim-label"])
+                .halign(Align::Start)
+                .ellipsize(gtk4::pango::EllipsizeMode::End)
+                .build();
+            text_box.append(&msg_lbl);
+
+            hbox.append(&text_box);
+            row.set_child(Some(&hbox));
+            list_box.append(&row);
+        }
+
+        sidebar_scrolled.set_child(Some(&list_box));
+        sidebar_box.append(&sidebar_scrolled);
+    }
 
     let sidebar_page = NavigationPage::builder()
         .title("Chats")
@@ -147,17 +174,18 @@ fn build_ui(app: &Application) {
         .build();
 
     // -------------------------------------------------------------
-    // 2. Content Area (Active Chat & Call Interface)
+    // 2. Content Area (Active Chat & VoIP Call)
     // -------------------------------------------------------------
     let content_header = HeaderBar::new();
 
+    let active_chat_name = real_chats.first().map(|c| c.name.clone()).unwrap_or_else(|| "ข้อความ".to_string());
     let chat_title_lbl = Label::builder()
-        .label("ภาควิชาวิทยาการคำนวณและเทคโนโลยีฯ")
+        .label(&active_chat_name)
         .css_classes(["heading"])
         .build();
     content_header.set_title_widget(Some(&chat_title_lbl));
 
-    // Call Button (LINE Planet VoIP!)
+    // Call Button (LINE Planet WebRTC)
     let call_btn = Button::builder()
         .icon_name("call-start-symbolic")
         .tooltip_text("LINE Planet Voice Call")
@@ -173,7 +201,6 @@ fn build_ui(app: &Application) {
     content_header.pack_end(&video_btn);
     content_header.pack_end(&call_btn);
 
-    // Call Button Action
     let toast_call = toast_overlay.clone();
     call_btn.connect_clicked(move |_| {
         let t = Toast::new("📞 เริ่มต้นสายโทรเสียง LINE Planet WebRTC...");
@@ -196,19 +223,12 @@ fn build_ui(app: &Application) {
     msg_container.set_margin_bottom(18);
     msg_container.set_vexpand(true);
 
-    // Sample message bubbles
     let add_bubble = |container: &Box, text: &str, is_me: bool, time: &str| {
         let bubble_box = Box::new(Orientation::Horizontal, 6);
         let bubble = Box::new(Orientation::Vertical, 4);
 
-        if is_me {
-            bubble_box.set_halign(Align::End);
-            bubble.set_css_classes(&["card"]);
-            // Custom inline style can be added via CSS provider
-        } else {
-            bubble_box.set_halign(Align::Start);
-            bubble.set_css_classes(&["card"]);
-        }
+        bubble_box.set_halign(if is_me { Align::End } else { Align::Start });
+        bubble.set_css_classes(&["card"]);
 
         bubble.set_margin_start(8);
         bubble.set_margin_end(8);
@@ -234,9 +254,9 @@ fn build_ui(app: &Application) {
         container.append(&bubble_box);
     };
 
-    add_bubble(&msg_container, "เรียนอาจารย์ทุกท่าน แจ้งกำหนดการประชุมกรรมการประจำภาควิชาบ่ายวันพุธนี้ครับ", false, "18:25");
-    add_bubble(&msg_container, "รับทราบครับ เดี๋ยวเตรียมเอกสารวาระการประชุมเสนอหลักสูตรไปให้ครับ", true, "18:28");
-    add_bubble(&msg_container, "ขอบพระคุณอาจารย์กิตติพงศ์มากครับ", false, "18:30");
+    if profile.is_some() {
+        add_bubble(&msg_container, "เชื่อมต่อบัญชีจริงสำเร็จ สามารถพิมพ์ส่งข้อความจริงเข้าแชต LINE ได้เลยครับ", false, "ระบบ");
+    }
 
     let msg_scrolled = ScrolledWindow::builder()
         .hscrollbar_policy(PolicyType::Never)
@@ -258,7 +278,7 @@ fn build_ui(app: &Application) {
         .build();
 
     let entry = Entry::builder()
-        .placeholder_text("พิมพ์ข้อความ...")
+        .placeholder_text("พิมพ์ข้อความส่งเข้า LINE...")
         .hexpand(true)
         .build();
 
@@ -271,14 +291,27 @@ fn build_ui(app: &Application) {
     composer_box.append(&entry);
     composer_box.append(&send_btn);
 
-    // Send action
+    // Send action: Wire directly to real LINE API!
     let entry_clone = entry.clone();
     let msg_cont_clone = msg_container.clone();
+    let mid_clone = Arc::clone(&selected_chat_mid);
+    let toast_send = toast_overlay.clone();
+
     send_btn.connect_clicked(move |_| {
         let text = entry_clone.text().to_string();
         if !text.trim().is_empty() {
-            add_bubble(&msg_cont_clone, &text, true, "เมื่อสักครู่");
-            entry_clone.set_text("");
+            let mid = mid_clone.lock().unwrap().clone();
+            if !mid.is_empty() {
+                let success = send_chat_message(&mid, &text);
+                if success {
+                    add_bubble(&msg_cont_clone, &text, true, "ส่งแล้ว");
+                    entry_clone.set_text("");
+                } else {
+                    toast_send.add_toast(Toast::new("❌ ส่งข้อความไม่สำเร็จ"));
+                }
+            } else {
+                toast_send.add_toast(Toast::new("⚠️ กรุณาเลือกห้องแชตก่อนส่ง"));
+            }
         }
     });
 
@@ -294,7 +327,7 @@ fn build_ui(app: &Application) {
         .build();
 
     // -------------------------------------------------------------
-    // 3. Navigation Split View (Responsive Master-Detail)
+    // 3. Navigation Split View & Main Window
     // -------------------------------------------------------------
     let split_view = NavigationSplitView::builder()
         .sidebar(&sidebar_page)
@@ -305,9 +338,6 @@ fn build_ui(app: &Application) {
 
     toast_overlay.set_child(Some(&split_view));
 
-    // -------------------------------------------------------------
-    // 4. Main Window
-    // -------------------------------------------------------------
     let window = ApplicationWindow::builder()
         .application(app)
         .title("LINE")
